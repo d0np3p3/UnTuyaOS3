@@ -110,23 +110,19 @@ fi
 
 unset _UNTUYAOS3_DIR _UNTUYAOS3_OPTS _step _script _UNTUYAOS3_VERBOSE _UNTUYAOS3_HELP _arg
 
-# Before exiting, disconnect the interface that connect.sh joined (if any),
-# leaving any other wireless links untouched. connect.sh exports UNTUYAOS3_IFACE
+# Before exiting, leave the interface that connect.sh joined up but disconnected
+# (radio unblocked, link up, not associated). connect.sh exports UNTUYAOS3_IFACE
 # only after it successfully associates.
 if [ -n "${UNTUYAOS3_IFACE:-}" ] && command -v iw >/dev/null 2>&1; then
     _UNTUYAOS3_SUDO=""
     if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
         _UNTUYAOS3_SUDO="sudo"
     fi
-    # Only disconnect if the interface is still connected to the SSID we joined.
-    # `iw dev <if> link` includes an "SSID: <name>" line when associated.
-    _UNTUYAOS3_CUR_SSID="$($_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" link 2>/dev/null \
-                          | sed -n 's/^[[:space:]]*SSID:[[:space:]]*//p')"
-    if [ -n "$_UNTUYAOS3_CUR_SSID" ] && [ "$_UNTUYAOS3_CUR_SSID" = "${UNTUYAOS3_SSID:-}" ]; then
-        printf 'Disconnecting %s from %s...\n' "$UNTUYAOS3_IFACE" "$_UNTUYAOS3_CUR_SSID"
-        $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
-    fi
-    unset _UNTUYAOS3_SUDO _UNTUYAOS3_CUR_SSID
+    printf 'Leaving %s up but disconnected...\n' "$UNTUYAOS3_IFACE"
+    command -v rfkill >/dev/null 2>&1 && $_UNTUYAOS3_SUDO rfkill unblock wifi 2>/dev/null
+    $_UNTUYAOS3_SUDO ip link set "$UNTUYAOS3_IFACE" up 2>/dev/null
+    $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
+    unset _UNTUYAOS3_SUDO
 fi
 
 # Propagate the final status: return to a sourced caller, exit when executed.

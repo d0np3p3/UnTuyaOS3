@@ -20,16 +20,18 @@ __UNT_OPTS="$(set +o)"
 set -u
 
 SCAN_INTERVAL=1                      # seconds between scans / status dots
-SSID_REGEX='-[0-9A-Fa-f]{4}$'        # ends with '-' + 4 hex chars
+# Ends with '-' + 4 hex chars. Written out as explicit character classes rather
+# than '-[0-9A-Fa-f]{4}$' because some awk builds don't honour {n} intervals.
+SSID_REGEX='-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$'
 __UNT_IFACE_ARG="${1:-}"             # optional: wireless interface as first arg
 
 die() { printf '\nerror: %s\n' "$*" >&2; }
 
-# Parse one scan pass; args: <iface> <ssid-regex>. Prints matching open SSIDs.
-scan_once() {
-    iw dev "$1" scan 2>/dev/null | awk -v re="$2" '
+# Parse scan output on stdin; arg: <ssid-regex>. Prints matching open SSIDs.
+parse_scan() {
+    awk -v re="$1" '
         function flush() {
-            if (ssid != "" && !enc && ssid ~ re) { print ssid; found=1 }
+            if (ssid != "" && !enc && ssid ~ re) { print ssid }
         }
         /^BSS /            { flush(); ssid=""; enc=0; next }
         /capability:/      { if (index($0, "Privacy")) enc=1; next }
@@ -40,7 +42,7 @@ scan_once() {
             ssid=$0
             next
         }
-        END { flush(); exit (found ? 0 : 1) }
+        END { flush() }
     '
 }
 
@@ -61,19 +63,50 @@ __connect_main() {
     fi
     [ -n "$iface" ] || { die "no wireless interface found (try: connect.sh <iface>)"; return 1; }
 
-    # Make sure the interface is up so it can scan.
-    ip link set "$iface" up 2>/dev/null
+    # Unblock the radio (rfkill soft-block) and bring the interface up. Both an
+    # rfkill block and a DOWN link make scans fail with "Network is down (-100)".
+    bring_up() {
+        command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null
+        ip link set "$1" up 2>/dev/null
+    }
+    bring_up "$iface"
+    sleep 1
 
-    printf 'Scanning on %s for open SmartLife AP\n' "$iface"
+    printf 'Scanning on %s for an open SmartLife AP\n' "$iface"
 
+    local raw rc scan_err_shown=0
     while :; do
-        match="$(scan_once "$iface" "$SSID_REGEX" | head -n 1)"
+        # Capture stdout+stderr and the exit code so a failing scan is visible
+        # instead of silently looping (e.g. "Device or resource busy (-16)" when
+        # another service manages the interface, or "Network is down (-100)").
+        raw="$(iw dev "$iface" scan 2>&1)"
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            if [ "$scan_err_shown" -eq 0 ]; then
+                printf '\niw scan on %s failed (exit %d): %s\n' "$iface" "$rc" \
+                    "$(printf '%s' "$raw" | tr '\n' ' ' | sed 's/  */ /g')" >&2
+                printf 'Bringing %s up and retrying' "$iface" >&2
+                scan_err_shown=1
+            else
+                printf '.' >&2
+            fi
+            # The interface may be down or rfkill-blocked; try to recover before
+            # the next scan attempt.
+            bring_up "$iface"
+            sleep "$SCAN_INTERVAL"
+            continue
+        fi
+        match="$(printf '%s\n' "$raw" | parse_scan "$SSID_REGEX" | head -n 1)"
         [ -n "$match" ] && break
         printf '.'
         sleep "$SCAN_INTERVAL"
     done
 
     printf '\nFound open network: %s\n' "$match"
+
+    # Ensure the interface is up but not currently associated before joining.
+    bring_up "$iface"
+    iw dev "$iface" disconnect 2>/dev/null
 
     # `iw connect` works for open (unencrypted) networks. `-w` waits for the
     # association to finish (or fail) so a real error is reported, not a race.
@@ -103,7 +136,7 @@ __UNT_RC=$?
 # Restore caller's shell options and clean up helpers (sourcing-safe).
 eval "$__UNT_OPTS"
 unset __UNT_OPTS __UNT_IFACE_ARG
-unset -f die scan_once 2>/dev/null
+unset -f die parse_scan bring_up 2>/dev/null
 if [ "$__UNT_SOURCED" = 1 ]; then
     unset __UNT_SOURCED
     return "$__UNT_RC"
