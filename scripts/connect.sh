@@ -119,13 +119,40 @@ __connect_main() {
     export UNTUYAOS3_IFACE="$iface"
     export UNTUYAOS3_SSID="$match"
 
+    # Obtain an IP via DHCP, but preserve /etc/resolv.conf. The Tuya AP's lease
+    # advertises a bogus DNS server that the DHCP client would write into the
+    # global /etc/resolv.conf, breaking name resolution on every interface. So
+    # snapshot resolv.conf, run a one-shot DHCP client (no lingering daemon to
+    # re-clobber it), then restore it exactly - including if it was a symlink
+    # (e.g. the systemd-resolved stub).
+    local __UNT_RESOLV_WAS=""
+    if [ -L /etc/resolv.conf ]; then
+        __UNT_RESOLV_WAS="link:$(readlink /etc/resolv.conf)"
+    elif [ -f /etc/resolv.conf ]; then
+        __UNT_RESOLV_WAS="file:$(mktemp)"
+        cat /etc/resolv.conf > "${__UNT_RESOLV_WAS#file:}" 2>/dev/null
+    fi
+
     if command -v dhclient >/dev/null 2>&1; then
         dhclient -1 "$iface" >/dev/null 2>&1
+        # Stop the dhclient daemon but keep the address (-x does not release),
+        # so it can't renew and rewrite resolv.conf after we restore it.
+        dhclient -x "$iface" >/dev/null 2>&1
     elif command -v dhcpcd >/dev/null 2>&1; then
-        dhcpcd "$iface" >/dev/null 2>&1
+        # -1 one-shot, -p keep the address after exit, --nohook resolv.conf so
+        # dhcpcd never touches DNS at all.
+        dhcpcd -1 -p --nohook resolv.conf "$iface" >/dev/null 2>&1
     elif command -v udhcpc >/dev/null 2>&1; then
-        udhcpc -i "$iface" -q >/dev/null 2>&1
+        # -q quits once a lease is obtained (no lingering daemon).
+        udhcpc -i "$iface" -q -n >/dev/null 2>&1
     fi
+
+    # Restore resolv.conf to its exact pre-DHCP state.
+    case "$__UNT_RESOLV_WAS" in
+        link:*) ln -sf "${__UNT_RESOLV_WAS#link:}" /etc/resolv.conf 2>/dev/null ;;
+        file:*) cat "${__UNT_RESOLV_WAS#file:}" > /etc/resolv.conf 2>/dev/null
+                rm -f "${__UNT_RESOLV_WAS#file:}" ;;
+    esac
 
     printf 'Connected to %s\n' "$match"
 }

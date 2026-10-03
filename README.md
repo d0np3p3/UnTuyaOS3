@@ -62,7 +62,7 @@ ESPHome Kickstart images are included by default, sourced from <https://github.c
 ```
 
 - **`-v` / `--verbose`** — replaces the upload progress bar with the full
-  per-frame TX/RX protocol log from `ap_ota.py` (useful for debugging).
+  per-frame TX/RX protocol log from `ap-ota.py` (useful for debugging).
 - **`-h` / `-?` / `--help`** — prints usage and exits without doing anything.
 
 ## Notes & cautions

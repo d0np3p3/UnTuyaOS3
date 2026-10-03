@@ -6,7 +6,7 @@
 #   2. select-platform.sh       (choose T1 / BK7231N / RTL8720CF -> UNTUYAOS3_PLATFORM)
 #   3. connect.sh               (scan for and connect to the matching open SSID)
 #
-# Then, if every step succeeded, it runs scripts/ap_ota.py with the selected
+# Then, if every step succeeded, it runs scripts/ap-ota.py with the selected
 # firmware ($UNTUYAOS3_FIRMWARE) as the first argument, while still connected.
 #
 # Before exiting (success or failure), it disconnects the interface connect.sh
@@ -17,15 +17,15 @@
 # including the OTA upload, so it does not need to be sourced):
 #
 #     sudo ./UnTuyaOS3.sh         # run the full flow
-#     sudo ./UnTuyaOS3.sh -v      # verbose: per-frame TX/RX logging in ap_ota.py
+#     sudo ./UnTuyaOS3.sh -v      # verbose: per-frame TX/RX logging in ap-ota.py
 #
 
 # Detect sourced vs executed (top level) so a failing step can return from a
 # sourced caller or exit when executed.
 if (return 0 2>/dev/null); then _UNTUYAOS3_SOURCED=1; else _UNTUYAOS3_SOURCED=0; fi
 
-# Parse flags. -v / --verbose turns on per-frame TX/RX logging in ap_ota.py;
-# without it, ap_ota.py shows a progress bar instead. -h / -? / --help prints
+# Parse flags. -v / --verbose turns on per-frame TX/RX logging in ap-ota.py;
+# without it, ap-ota.py shows a progress bar instead. -h / -? / --help prints
 # usage and stops.
 _UNTUYAOS3_VERBOSE=""
 _UNTUYAOS3_HELP=0
@@ -122,6 +122,8 @@ if [ -n "${UNTUYAOS3_IFACE:-}" ] && command -v iw >/dev/null 2>&1; then
     command -v rfkill >/dev/null 2>&1 && $_UNTUYAOS3_SUDO rfkill unblock wifi 2>/dev/null
     $_UNTUYAOS3_SUDO ip link set "$UNTUYAOS3_IFACE" up 2>/dev/null
     $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
+    # Drop the IP obtained for the OTA so the interface is left clean.
+    $_UNTUYAOS3_SUDO ip addr flush dev "$UNTUYAOS3_IFACE" 2>/dev/null
     unset _UNTUYAOS3_SUDO
 fi
 
