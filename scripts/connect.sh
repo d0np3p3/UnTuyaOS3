@@ -27,6 +27,20 @@ __UNT_IFACE_ARG="${1:-}"             # optional: wireless interface as first arg
 
 die() { printf '\nerror: %s\n' "$*" >&2; }
 
+# Clear per-link DNS that a DHCP client may have registered for an interface,
+# across the common resolvers (systemd-resolved and classic resolvconf).
+clear_link_dns() {
+    if command -v resolvectl >/dev/null 2>&1; then
+        resolvectl revert "$1" >/dev/null 2>&1
+        resolvectl flush-caches >/dev/null 2>&1
+    fi
+    if command -v resolvconf >/dev/null 2>&1; then
+        resolvconf -d "$1.dhclient" >/dev/null 2>&1
+        resolvconf -d "$1.udhcpc" >/dev/null 2>&1
+        resolvconf -d "$1" >/dev/null 2>&1
+    fi
+}
+
 # Parse scan output on stdin; arg: <ssid-regex>. Prints matching open SSIDs.
 parse_scan() {
     awk -v re="$1" '
@@ -147,12 +161,18 @@ __connect_main() {
         udhcpc -i "$iface" -q -n >/dev/null 2>&1
     fi
 
-    # Restore resolv.conf to its exact pre-DHCP state.
+    # Restore resolv.conf to its exact pre-DHCP state (covers the plain-file
+    # case where the DHCP client overwrote /etc/resolv.conf directly).
     case "$__UNT_RESOLV_WAS" in
         link:*) ln -sf "${__UNT_RESOLV_WAS#link:}" /etc/resolv.conf 2>/dev/null ;;
         file:*) cat "${__UNT_RESOLV_WAS#file:}" > /etc/resolv.conf 2>/dev/null
                 rm -f "${__UNT_RESOLV_WAS#file:}" ;;
     esac
+
+    # On systemd-resolved / resolvconf systems the DHCP client registers the
+    # AP's DNS *per-link* through a channel the file restore above doesn't undo.
+    # Clear this interface's DNS so the bogus server isn't used system-wide.
+    clear_link_dns "$iface"
 
     printf 'Connected to %s\n' "$match"
 }
@@ -163,7 +183,7 @@ __UNT_RC=$?
 # Restore caller's shell options and clean up helpers (sourcing-safe).
 eval "$__UNT_OPTS"
 unset __UNT_OPTS __UNT_IFACE_ARG
-unset -f die parse_scan bring_up 2>/dev/null
+unset -f die parse_scan bring_up clear_link_dns 2>/dev/null
 if [ "$__UNT_SOURCED" = 1 ]; then
     unset __UNT_SOURCED
     return "$__UNT_RC"

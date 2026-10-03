@@ -124,6 +124,12 @@ if [ -n "${UNTUYAOS3_IFACE:-}" ] && command -v iw >/dev/null 2>&1; then
     $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
     # Drop the IP obtained for the OTA so the interface is left clean.
     $_UNTUYAOS3_SUDO ip addr flush dev "$UNTUYAOS3_IFACE" 2>/dev/null
+    # Clear any per-link DNS the DHCP lease registered for this interface so the
+    # device AP's bogus DNS server isn't left behind (systemd-resolved).
+    if command -v resolvectl >/dev/null 2>&1; then
+        $_UNTUYAOS3_SUDO resolvectl revert "$UNTUYAOS3_IFACE" >/dev/null 2>&1
+        $_UNTUYAOS3_SUDO resolvectl flush-caches >/dev/null 2>&1
+    fi
     unset _UNTUYAOS3_SUDO
 fi
 
