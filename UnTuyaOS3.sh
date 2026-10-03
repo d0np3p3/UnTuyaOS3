@@ -66,6 +66,15 @@ _UNTUYAOS3_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # `set +o` prints a reusable series of `set -o/+o <name>` commands.
 _UNTUYAOS3_OPTS="$(set +o)"
 
+# Snapshot /etc/resolv.conf (when it's a plain file) BEFORE we touch networking,
+# so DNS can be restored at the end if the normal network manager doesn't
+# repopulate it. Skipped when it's a symlink (e.g. the systemd-resolved stub).
+_UNTUYAOS3_RESOLV_SNAP=""
+if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
+    _UNTUYAOS3_RESOLV_SNAP="$(mktemp 2>/dev/null)"
+    [ -n "$_UNTUYAOS3_RESOLV_SNAP" ] && cat /etc/resolv.conf > "$_UNTUYAOS3_RESOLV_SNAP" 2>/dev/null
+fi
+
 _UNTUYAOS3_RC=0
 for _step in install-requirements.sh select-platform.sh connect.sh; do
     _script="${_UNTUYAOS3_DIR}/scripts/${_step}"
@@ -110,28 +119,54 @@ fi
 
 unset _UNTUYAOS3_DIR _UNTUYAOS3_OPTS _step _script _UNTUYAOS3_VERBOSE _UNTUYAOS3_HELP _arg
 
-# Before exiting, leave the interface that connect.sh joined up but disconnected
-# (radio unblocked, link up, not associated). connect.sh exports UNTUYAOS3_IFACE
+# Before exiting, restore normal networking on the interface connect.sh used.
+# We took it off its usual network to join the device AP; if we just left it
+# disconnected, the interface's DNS source is gone and /etc/resolv.conf ends up
+# empty. Handing it back to the system network manager reconnects it to its
+# configured network and repopulates DNS. connect.sh exports UNTUYAOS3_IFACE
 # only after it successfully associates.
-if [ -n "${UNTUYAOS3_IFACE:-}" ] && command -v iw >/dev/null 2>&1; then
+if [ -n "${UNTUYAOS3_IFACE:-}" ]; then
     _UNTUYAOS3_SUDO=""
     if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
         _UNTUYAOS3_SUDO="sudo"
     fi
-    printf 'Leaving %s up but disconnected...\n' "$UNTUYAOS3_IFACE"
     command -v rfkill >/dev/null 2>&1 && $_UNTUYAOS3_SUDO rfkill unblock wifi 2>/dev/null
-    $_UNTUYAOS3_SUDO ip link set "$UNTUYAOS3_IFACE" up 2>/dev/null
-    $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
-    # Drop the IP obtained for the OTA so the interface is left clean.
-    $_UNTUYAOS3_SUDO ip addr flush dev "$UNTUYAOS3_IFACE" 2>/dev/null
-    # Clear any per-link DNS the DHCP lease registered for this interface so the
-    # device AP's bogus DNS server isn't left behind (systemd-resolved).
-    if command -v resolvectl >/dev/null 2>&1; then
-        $_UNTUYAOS3_SUDO resolvectl revert "$UNTUYAOS3_IFACE" >/dev/null 2>&1
-        $_UNTUYAOS3_SUDO resolvectl flush-caches >/dev/null 2>&1
+
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dhcpcd 2>/dev/null; then
+        # dhcpcd (with its wpa_supplicant hook) manages the interface: restarting
+        # it drops the device AP, reconnects the normal network, and rewrites
+        # /etc/resolv.conf with the real DNS servers.
+        printf 'Restoring networking on %s (restarting dhcpcd)...\n' "$UNTUYAOS3_IFACE"
+        $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
+        $_UNTUYAOS3_SUDO systemctl restart dhcpcd >/dev/null 2>&1
+        sleep 3
+    elif command -v NetworkManager >/dev/null 2>&1 && command -v nmcli >/dev/null 2>&1; then
+        # NetworkManager: hand the device back to it to reconnect automatically.
+        printf 'Restoring networking on %s (NetworkManager)...\n' "$UNTUYAOS3_IFACE"
+        $_UNTUYAOS3_SUDO nmcli dev set "$UNTUYAOS3_IFACE" managed yes >/dev/null 2>&1
+        $_UNTUYAOS3_SUDO nmcli dev connect "$UNTUYAOS3_IFACE" >/dev/null 2>&1
+        sleep 3
+    else
+        # No known manager: leave the interface up but disconnected.
+        printf 'Leaving %s up but disconnected...\n' "$UNTUYAOS3_IFACE"
+        $_UNTUYAOS3_SUDO ip link set "$UNTUYAOS3_IFACE" up 2>/dev/null
+        $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
+        $_UNTUYAOS3_SUDO ip addr flush dev "$UNTUYAOS3_IFACE" 2>/dev/null
+    fi
+
+    # Restore the exact pre-run /etc/resolv.conf as the final action. The file
+    # is shared by ALL interfaces, so a DHCP client wiping it while we used Wi-Fi
+    # also kills DNS on ethernet. Putting back the snapshot (captured when DNS
+    # worked) restores every interface's servers regardless of what was written.
+    if [ -n "$_UNTUYAOS3_RESOLV_SNAP" ]; then
+        $_UNTUYAOS3_SUDO cp "$_UNTUYAOS3_RESOLV_SNAP" /etc/resolv.conf 2>/dev/null
     fi
     unset _UNTUYAOS3_SUDO
 fi
+
+# Remove the resolv.conf snapshot file.
+[ -n "$_UNTUYAOS3_RESOLV_SNAP" ] && rm -f "$_UNTUYAOS3_RESOLV_SNAP" 2>/dev/null
+unset _UNTUYAOS3_RESOLV_SNAP
 
 # Propagate the final status: return to a sourced caller, exit when executed.
 if [ "$_UNTUYAOS3_SOURCED" = 1 ]; then
