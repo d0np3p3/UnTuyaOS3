@@ -304,13 +304,17 @@ def main():
     total = fw.stat().st_size
 
     sock.settimeout(SOCKET_TIMEOUT)
+    ota_send_complete = False
 
     while True:
         try:
             msg = sock.recv(4096)
         except socket.timeout:
-            print("Socket timed out while attempting OTA.  Please try again.")
-            return
+            if ota_send_complete is False:
+                print("Socket timed out while attempting OTA.  Please try again.")
+                return
+            else:
+                break
         if not msg:
             break
         frame = Lpv35Frame.unpack_and_decrypt(msg, session_key)
@@ -335,8 +339,7 @@ def main():
         else:
             draw_progress(offset + length, total)
             if offset + length >= total:
-                print("\nOTA upload complete!")
-                break
+                ota_send_complete = True
         f.seek(offset, SEEK_SET)
         chunk = f.read(length)
         frame = Lpv35Frame(
