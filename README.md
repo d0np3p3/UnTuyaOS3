@@ -9,9 +9,10 @@ This will only work on some TuyaOS 3 devices.  There is no clear-cut way to dete
 
 ## Prerequisites
 
-- A Linux host with a Wi-Fi adapter and `iw` available (installed automatically
-  in step 1 if missing).
-- Root privileges for the Wi-Fi scan/associate/disconnect operations and package installation.
+- A Linux host with a Wi-Fi adapter, `iw`, a Docker engine (`docker` / `docker.io`)
+  and `docker-cli` (a hard requirement). All are installed automatically on first
+  run if missing.
+- Root privileges for moving the Wi-Fi interface, Docker, and package installation.
 - One or more valid `UG` firmware files placed in the platform folder under
   `custom-firmware/` (see below).
 - A compatible TuyaOS3 device.
@@ -49,8 +50,11 @@ ESPHome Kickstart images are included by default, sourced from <https://github.c
    sudo ./UnTuyaOS3.sh
    ```
 
-3. Answer the platform and firmware prompts. The script then waits for the
-   device's AP, connects, uploads the firmware, and disconnects.
+3. Answer the platform and firmware prompts. The script then starts a container
+   (`python:3` based, with all Python requirements pip-installed inside it),
+   passes the Wi-Fi interface into it, waits for the device's AP, connects
+   (DHCP runs inside the container, so the host's DNS is untouched), uploads the
+   firmware, and hands the interface back to the host.
 
 ### Options
 
@@ -70,6 +74,7 @@ ESPHome Kickstart images are included by default, sourced from <https://github.c
 - **Flashing custom firmware is at your own risk** and may brick the device or
   void its warranty.
 - If a device becomes bricked, serial flashing will be the only recovery method.
+- The container image is built once as `untuyaos3`; `docker rmi untuyaos3` forces a rebuild.
 - If the device's AP and your normal network share a single Wi-Fi radio,
   connecting to the device will drop your other connection on that interface
   (including an SSH-over-Wi-Fi session).

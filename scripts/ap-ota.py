@@ -314,7 +314,7 @@ def main():
                 print("Socket timed out while attempting OTA.  Please try again.")
                 return
             else:
-                print("\nOTA upload completed, but we didn't get a final confirmation packet.  Check to see if your device rebooted to custom firmware, otherwise try again.")
+                print("\nOTA upload completed, but we didn't get a final confirmation packet.  This usually means success, but check to see if your device rebooted to custom firmware, which may take a couple minutes.  If it does not, please retry from the beginning.")
                 break
         if not msg:
             break

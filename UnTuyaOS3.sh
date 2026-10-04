@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 #
 # UnTuyaOS3.sh - Top-level wrapper. Sources, in order:
-#   1. install-requirements.sh  (install python/pip, create & activate the
-#                                UnTuyaOS3 environment)
+#   1. install-requirements.sh  (ensure iw, docker and docker-cli are installed
+#                                and build the untuyaos3 container image)
 #   2. select-platform.sh       (choose T1 / BK7231N / RTL8720CF -> UNTUYAOS3_PLATFORM)
-#   3. connect.sh               (scan for and connect to the matching open SSID)
 #
-# Then, if every step succeeded, it runs scripts/ap-ota.py with the selected
-# firmware ($UNTUYAOS3_FIRMWARE) as the first argument, while still connected.
-#
-# Before exiting (success or failure), it disconnects the interface connect.sh
-# joined (UNTUYAOS3_IFACE) via `iw`, but only if it is still connected to the
-# SSID that was joined (UNTUYAOS3_SSID), leaving other links untouched.
+# Then it starts the container and hands the Wi-Fi interface (its whole phy) into
+# the container's network namespace. Inside, container-entry.sh connects to the
+# device AP (connect.sh, DHCP included) and runs ap-ota.py with the selected
+# firmware. When the container exits the interface returns to the host, and the
+# host's network manager is told to reconnect it.
 #
 # This is the entry point; run it directly (it performs every step itself,
 # including the OTA upload, so it does not need to be sourced):
@@ -53,8 +51,7 @@ EOF
     exit 0
 fi
 
-# Clear positional parameters so the sourced steps don't inherit this flag
-# (connect.sh reads $1 as an optional interface name).
+# Clear positional parameters so the sourced steps don't inherit our flags.
 set --
 
 # Resolve the directory this script lives in, so sourcing works from any cwd.
@@ -66,17 +63,8 @@ _UNTUYAOS3_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # `set +o` prints a reusable series of `set -o/+o <name>` commands.
 _UNTUYAOS3_OPTS="$(set +o)"
 
-# Snapshot /etc/resolv.conf (when it's a plain file) BEFORE we touch networking,
-# so DNS can be restored at the end if the normal network manager doesn't
-# repopulate it. Skipped when it's a symlink (e.g. the systemd-resolved stub).
-_UNTUYAOS3_RESOLV_SNAP=""
-if [ -f /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
-    _UNTUYAOS3_RESOLV_SNAP="$(mktemp 2>/dev/null)"
-    [ -n "$_UNTUYAOS3_RESOLV_SNAP" ] && cat /etc/resolv.conf > "$_UNTUYAOS3_RESOLV_SNAP" 2>/dev/null
-fi
-
 _UNTUYAOS3_RC=0
-for _step in install-requirements.sh select-platform.sh connect.sh; do
+for _step in install-requirements.sh select-platform.sh; do
     _script="${_UNTUYAOS3_DIR}/scripts/${_step}"
     if [ ! -f "$_script" ]; then
         printf 'UnTuyaOS3: missing script: %s\n' "$_script" >&2
@@ -95,78 +83,99 @@ for _step in install-requirements.sh select-platform.sh connect.sh; do
     fi
 done
 
-# After all the bash steps succeed, run the AP OTA Python script with the
-# selected firmware as its first argument. This runs while still connected to
-# the AP (before the disconnect below). Skipped if any step above failed.
+# Pick the wireless interface (and its phy) to hand to the container.
+_UNTUYAOS3_IFACE=""
+_UNTUYAOS3_PHY=""
 if [ "$_UNTUYAOS3_RC" -eq 0 ]; then
-    _UNTUYAOS3_OTA="${_UNTUYAOS3_DIR}/scripts/ap-ota.py"
-    if [ ! -f "$_UNTUYAOS3_OTA" ]; then
-        printf 'UnTuyaOS3: missing script: %s\n' "$_UNTUYAOS3_OTA" >&2
+    if [ "$(id -u)" -ne 0 ]; then
+        printf 'UnTuyaOS3: must be run as root (moving the Wi-Fi interface requires it)\n' >&2
+        _UNTUYAOS3_RC=1
+    elif ! command -v iw >/dev/null 2>&1; then
+        printf 'UnTuyaOS3: iw not found in PATH\n' >&2
         _UNTUYAOS3_RC=1
     else
-        _UNTUYAOS3_PY="$(command -v python3 || command -v python)"
-        printf '\n===== UnTuyaOS3: ap-ota.py =====\n'
-        # Pass -v through as the second argument only when requested.
-        if [ -n "$_UNTUYAOS3_VERBOSE" ]; then
-            "$_UNTUYAOS3_PY" "$_UNTUYAOS3_OTA" "${UNTUYAOS3_FIRMWARE:-}" "$_UNTUYAOS3_VERBOSE"
-        else
-            "$_UNTUYAOS3_PY" "$_UNTUYAOS3_OTA" "${UNTUYAOS3_FIRMWARE:-}"
+        _UNTUYAOS3_IFACE="$(iw dev | awk '$1=="Interface"{print $2; exit}')"
+        _UNTUYAOS3_PHY="$(iw dev "$_UNTUYAOS3_IFACE" info 2>/dev/null | awk '$1=="wiphy"{print "phy" $2; exit}')"
+        if [ -z "$_UNTUYAOS3_IFACE" ] || [ -z "$_UNTUYAOS3_PHY" ]; then
+            printf 'UnTuyaOS3: no wireless interface found\n' >&2
+            printf '  If a previous run was interrupted the adapter may still be inside a container:\n' >&2
+            printf '  run `docker rm -f $(docker ps -aq --filter name=untuyaos3-)`; if it stays missing, reboot.\n' >&2
+            _UNTUYAOS3_IFACE=""
+            _UNTUYAOS3_RC=1
         fi
-        _UNTUYAOS3_RC=$?
     fi
-    unset _UNTUYAOS3_OTA _UNTUYAOS3_PY
 fi
 
-unset _UNTUYAOS3_DIR _UNTUYAOS3_OPTS _step _script _UNTUYAOS3_VERBOSE _UNTUYAOS3_HELP _arg
+if [ "$_UNTUYAOS3_RC" -eq 0 ]; then
+    _UNTUYAOS3_NAME="untuyaos3-$$"
+    # The firmware lives under the project root, which is mounted at /untuyaos3.
+    _UNTUYAOS3_FW="/untuyaos3/${UNTUYAOS3_FIRMWARE#"${_UNTUYAOS3_DIR}/"}"
 
-# Before exiting, restore normal networking on the interface connect.sh used.
-# We took it off its usual network to join the device AP; if we just left it
-# disconnected, the interface's DNS source is gone and /etc/resolv.conf ends up
-# empty. Handing it back to the system network manager reconnects it to its
-# configured network and repopulates DNS. connect.sh exports UNTUYAOS3_IFACE
-# only after it successfully associates.
-if [ -n "${UNTUYAOS3_IFACE:-}" ]; then
-    _UNTUYAOS3_SUDO=""
-    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
-        _UNTUYAOS3_SUDO="sudo"
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null
+
+    printf '\n===== UnTuyaOS3: container (%s) =====\n' "$_UNTUYAOS3_IFACE"
+    # --network none gives the container its own empty network namespace; the
+    # Wi-Fi phy is moved into it below, so the host's routes and DNS are never
+    # touched by the Tuya AP's DHCP lease. The container idles while we do that,
+    # then the work runs via `docker exec`.
+    if docker run -dt --name "$_UNTUYAOS3_NAME" --network none \
+            --cap-add NET_ADMIN --cap-add NET_RAW \
+            -v "${_UNTUYAOS3_DIR}:/untuyaos3:ro" "${UNTUYAOS3_IMAGE:-untuyaos3}" \
+            sleep infinity >/dev/null; then
+        _UNTUYAOS3_PID="$(docker inspect -f '{{.State.Pid}}' "$_UNTUYAOS3_NAME")"
+
+        # Explicitly move the phy back to the host's namespace (pid 1) before the
+        # container goes away, rather than relying on namespace teardown.
+        _untuyaos3_release() {
+            nsenter -t "$_UNTUYAOS3_PID" -n iw phy "$_UNTUYAOS3_PHY" set netns 1 2>/dev/null
+            docker rm -f "$_UNTUYAOS3_NAME" >/dev/null 2>&1
+        }
+        trap '_untuyaos3_release' INT TERM
+
+        if iw phy "$_UNTUYAOS3_PHY" set netns "$_UNTUYAOS3_PID"; then
+            docker exec -t "$_UNTUYAOS3_NAME" bash /untuyaos3/scripts/container-entry.sh \
+                "$_UNTUYAOS3_IFACE" "$_UNTUYAOS3_FW" ${_UNTUYAOS3_VERBOSE:+"$_UNTUYAOS3_VERBOSE"}
+            _UNTUYAOS3_RC=$?
+        else
+            printf 'UnTuyaOS3: failed to move %s into the container\n' "$_UNTUYAOS3_PHY" >&2
+            _UNTUYAOS3_RC=1
+        fi
+        trap - INT TERM
+        _untuyaos3_release
+        unset -f _untuyaos3_release
+    else
+        _UNTUYAOS3_RC=1
     fi
-    command -v rfkill >/dev/null 2>&1 && $_UNTUYAOS3_SUDO rfkill unblock wifi 2>/dev/null
+
+    # Wait for the interface to reappear before restoring networking on it.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        iw dev 2>/dev/null | grep -q "Interface $_UNTUYAOS3_IFACE" && break
+        sleep 1
+    done
+fi
+
+# Hand the interface back to the system network manager so it reconnects to its
+# usual network.
+if [ -n "$_UNTUYAOS3_IFACE" ]; then
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null
 
     if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dhcpcd 2>/dev/null; then
-        # dhcpcd (with its wpa_supplicant hook) manages the interface: restarting
-        # it drops the device AP, reconnects the normal network, and rewrites
-        # /etc/resolv.conf with the real DNS servers.
-        printf 'Restoring networking on %s (restarting dhcpcd)...\n' "$UNTUYAOS3_IFACE"
-        $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
-        $_UNTUYAOS3_SUDO systemctl restart dhcpcd >/dev/null 2>&1
+        printf 'Restoring networking on %s (restarting dhcpcd)...\n' "$_UNTUYAOS3_IFACE"
+        systemctl restart dhcpcd >/dev/null 2>&1
         sleep 3
     elif command -v NetworkManager >/dev/null 2>&1 && command -v nmcli >/dev/null 2>&1; then
-        # NetworkManager: hand the device back to it to reconnect automatically.
-        printf 'Restoring networking on %s (NetworkManager)...\n' "$UNTUYAOS3_IFACE"
-        $_UNTUYAOS3_SUDO nmcli dev set "$UNTUYAOS3_IFACE" managed yes >/dev/null 2>&1
-        $_UNTUYAOS3_SUDO nmcli dev connect "$UNTUYAOS3_IFACE" >/dev/null 2>&1
+        printf 'Restoring networking on %s (NetworkManager)...\n' "$_UNTUYAOS3_IFACE"
+        nmcli dev set "$_UNTUYAOS3_IFACE" managed yes >/dev/null 2>&1
+        nmcli dev connect "$_UNTUYAOS3_IFACE" >/dev/null 2>&1
         sleep 3
     else
-        # No known manager: leave the interface up but disconnected.
-        printf 'Leaving %s up but disconnected...\n' "$UNTUYAOS3_IFACE"
-        $_UNTUYAOS3_SUDO ip link set "$UNTUYAOS3_IFACE" up 2>/dev/null
-        $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
-        $_UNTUYAOS3_SUDO ip addr flush dev "$UNTUYAOS3_IFACE" 2>/dev/null
+        printf 'Leaving %s up but disconnected...\n' "$_UNTUYAOS3_IFACE"
+        ip link set "$_UNTUYAOS3_IFACE" up 2>/dev/null
     fi
-
-    # Restore the exact pre-run /etc/resolv.conf as the final action. The file
-    # is shared by ALL interfaces, so a DHCP client wiping it while we used Wi-Fi
-    # also kills DNS on ethernet. Putting back the snapshot (captured when DNS
-    # worked) restores every interface's servers regardless of what was written.
-    if [ -n "$_UNTUYAOS3_RESOLV_SNAP" ]; then
-        $_UNTUYAOS3_SUDO cp "$_UNTUYAOS3_RESOLV_SNAP" /etc/resolv.conf 2>/dev/null
-    fi
-    unset _UNTUYAOS3_SUDO
 fi
 
-# Remove the resolv.conf snapshot file.
-[ -n "$_UNTUYAOS3_RESOLV_SNAP" ] && rm -f "$_UNTUYAOS3_RESOLV_SNAP" 2>/dev/null
-unset _UNTUYAOS3_RESOLV_SNAP
+unset _UNTUYAOS3_DIR _UNTUYAOS3_OPTS _UNTUYAOS3_VERBOSE _UNTUYAOS3_HELP \
+      _UNTUYAOS3_IFACE _UNTUYAOS3_PHY _UNTUYAOS3_NAME _UNTUYAOS3_FW _UNTUYAOS3_PID _step _script _arg _
 
 # Propagate the final status: return to a sourced caller, exit when executed.
 if [ "$_UNTUYAOS3_SOURCED" = 1 ]; then
