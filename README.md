@@ -106,13 +106,17 @@ docker run --rm -it --network host --cap-add NET_ADMIN --cap-add NET_RAW \
 
 The host's network manager still manages the adapter, the same as when running
 natively. The device's bogus DNS server can't reach the host, because the
-container has its own `/etc/resolv.conf`.
+container has its own `/etc/resolv.conf`. The container can't ask the host's
+network manager to reconnect the adapter afterwards. If it doesn't reconnect
+by itself, run `sudo scripts/restore-network.sh wlan1` on the host.
 
 ### Isolated (dedicated adapter)
 
 `docker/run-isolated.sh` moves the adapter into the container, so the host
 can't use or interfere with it until the container exits. The kernel then
-returns it to the host automatically. Run it as root on the Docker host:
+returns it to the host automatically. If the adapter was connected to a
+network beforehand, the script then tells the host's network manager to
+reconnect it. Run it as root on the Docker host:
 
 ```bash
 sudo docker/run-isolated.sh wlan1

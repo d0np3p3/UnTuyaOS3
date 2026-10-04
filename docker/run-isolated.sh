@@ -6,7 +6,9 @@
 # Wi-Fi adapters have no /dev node, so `--device` can't pass one through.
 # Instead the adapter's phy is moved into the container's network namespace:
 # it disappears from the host (so no host network manager can interfere) and
-# the kernel hands it back automatically when the container exits.
+# the kernel hands it back automatically when the container exits. If it was
+# connected to a network before, it is then handed back to the host's network
+# manager (scripts/restore-network.sh) to reconnect.
 #
 # Run it as root ON the Docker host (the container PID must be local):
 #
@@ -19,6 +21,7 @@
 
 set -u
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${UNTUYAOS3_IMAGE:-untuyaos3}"
 NAME="untuyaos3-isolated-$$"
 
@@ -47,6 +50,16 @@ iw phy "$PHY" info | grep -q 'set_wiphy_netns' \
 docker image inspect "$IMAGE" >/dev/null 2>&1 \
     || die "image '${IMAGE}' not found; build it first with: docker compose build"
 
+VOLUME_FLAGS=()
+if [ -n "${UNTUYAOS3_FIRMWARE_DIR:-}" ]; then
+    [ -d "$UNTUYAOS3_FIRMWARE_DIR" ] || die "UNTUYAOS3_FIRMWARE_DIR is not a directory: ${UNTUYAOS3_FIRMWARE_DIR}"
+    VOLUME_FLAGS=(-v "$(cd "$UNTUYAOS3_FIRMWARE_DIR" && pwd):/app/custom-firmware:ro")
+fi
+
+# Only reconnect the interface afterwards if it was in use before.
+WAS_CONNECTED=0
+iw dev "$IFACE" link 2>/dev/null | grep -q '^Connected' && WAS_CONNECTED=1
+
 printf 'Moving %s (%s) into the container; it returns to the host when the container exits.\n' \
     "$IFACE" "$PHY"
 
@@ -74,12 +87,6 @@ TTY_FLAGS="-i"
 DEVICE_FLAGS=""
 [ -e /dev/rfkill ] && DEVICE_FLAGS="--device /dev/rfkill"
 
-VOLUME_FLAGS=()
-if [ -n "${UNTUYAOS3_FIRMWARE_DIR:-}" ]; then
-    [ -d "$UNTUYAOS3_FIRMWARE_DIR" ] || die "UNTUYAOS3_FIRMWARE_DIR is not a directory: ${UNTUYAOS3_FIRMWARE_DIR}"
-    VOLUME_FLAGS=(-v "$(cd "$UNTUYAOS3_FIRMWARE_DIR" && pwd):/app/custom-firmware:ro")
-fi
-
 # shellcheck disable=SC2086  # intentional word-splitting of the flag lists
 docker run --rm $TTY_FLAGS --name "$NAME" \
     --network none \
@@ -87,8 +94,21 @@ docker run --rm $TTY_FLAGS --name "$NAME" \
     $DEVICE_FLAGS \
     "${VOLUME_FLAGS[@]}" \
     -e UNTUYAOS3_IFACE_WAIT=30 \
+    -e UNTUYAOS3_HOST_RESTORES=1 \
     "$IMAGE" "$@"
 RC=$?
 
 wait "$MOVER" 2>/dev/null
+
+# The kernel returns the phy once the container's network namespace is gone.
+for _ in $(seq 1 20); do
+    [ -e "/sys/class/net/${IFACE}" ] && break
+    sleep 0.5
+done
+if [ ! -e "/sys/class/net/${IFACE}" ]; then
+    printf 'warning: %s has not returned to the host yet; if it stays missing, reboot.\n' "$IFACE" >&2
+elif [ "$WAS_CONNECTED" = 1 ]; then
+    bash "${ROOT}/scripts/restore-network.sh" "$IFACE"
+fi
+
 exit "$RC"

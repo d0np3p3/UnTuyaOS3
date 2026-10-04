@@ -176,7 +176,13 @@ __connect_main() {
     # Clear this interface's DNS so the bogus server isn't used system-wide.
     clear_link_dns "$iface"
 
-    printf 'Connected to %s\n' "$match"
+    # Without an address the OTA upload can't reach the device, so fail here
+    # with a clear message instead of a socket timeout later.
+    local addr
+    addr="$(ip -4 -o addr show dev "$iface" | awk '{print $4; exit}')"
+    [ -n "$addr" ] || { die "DHCP did not assign an address on '$iface'"; return 1; }
+
+    printf 'Connected to %s (address %s)\n' "$match" "$addr"
 }
 
 __connect_main

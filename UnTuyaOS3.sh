@@ -178,7 +178,7 @@ if [ "$_UNTUYAOS3_RC" -eq 0 ]; then
     unset _UNTUYAOS3_OTA _UNTUYAOS3_PY
 fi
 
-unset _UNTUYAOS3_DIR _UNTUYAOS3_OPTS _step _script _UNTUYAOS3_VERBOSE _UNTUYAOS3_HELP _arg \
+unset _UNTUYAOS3_OPTS _step _script _UNTUYAOS3_VERBOSE _UNTUYAOS3_HELP _arg \
       _UNTUYAOS3_STEPS _UNTUYAOS3_IFACE_ARG _UNTUYAOS3_PLATFORM_ARG _UNTUYAOS3_FIRMWARE_ARG
 
 # Before exiting, restore normal networking on the interface connect.sh used.
@@ -192,29 +192,7 @@ if [ -n "${UNTUYAOS3_IFACE:-}" ]; then
     if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
         _UNTUYAOS3_SUDO="sudo"
     fi
-    command -v rfkill >/dev/null 2>&1 && $_UNTUYAOS3_SUDO rfkill unblock wifi 2>/dev/null
-
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dhcpcd 2>/dev/null; then
-        # dhcpcd (with its wpa_supplicant hook) manages the interface: restarting
-        # it drops the device AP, reconnects the normal network, and rewrites
-        # /etc/resolv.conf with the real DNS servers.
-        printf 'Restoring networking on %s (restarting dhcpcd)...\n' "$UNTUYAOS3_IFACE"
-        $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
-        $_UNTUYAOS3_SUDO systemctl restart dhcpcd >/dev/null 2>&1
-        sleep 3
-    elif command -v NetworkManager >/dev/null 2>&1 && command -v nmcli >/dev/null 2>&1; then
-        # NetworkManager: hand the device back to it to reconnect automatically.
-        printf 'Restoring networking on %s (NetworkManager)...\n' "$UNTUYAOS3_IFACE"
-        $_UNTUYAOS3_SUDO nmcli dev set "$UNTUYAOS3_IFACE" managed yes >/dev/null 2>&1
-        $_UNTUYAOS3_SUDO nmcli dev connect "$UNTUYAOS3_IFACE" >/dev/null 2>&1
-        sleep 3
-    else
-        # No known manager: leave the interface up but disconnected.
-        printf 'Leaving %s up but disconnected...\n' "$UNTUYAOS3_IFACE"
-        $_UNTUYAOS3_SUDO ip link set "$UNTUYAOS3_IFACE" up 2>/dev/null
-        $_UNTUYAOS3_SUDO iw dev "$UNTUYAOS3_IFACE" disconnect 2>/dev/null
-        $_UNTUYAOS3_SUDO ip addr flush dev "$UNTUYAOS3_IFACE" 2>/dev/null
-    fi
+    bash "${_UNTUYAOS3_DIR}/scripts/restore-network.sh" "$UNTUYAOS3_IFACE"
 
     # Restore the exact pre-run /etc/resolv.conf as the final action. The file
     # is shared by ALL interfaces, so a DHCP client wiping it while we used Wi-Fi
@@ -228,7 +206,7 @@ fi
 
 # Remove the resolv.conf snapshot file.
 [ -n "$_UNTUYAOS3_RESOLV_SNAP" ] && rm -f "$_UNTUYAOS3_RESOLV_SNAP" 2>/dev/null
-unset _UNTUYAOS3_RESOLV_SNAP
+unset _UNTUYAOS3_RESOLV_SNAP _UNTUYAOS3_DIR
 
 # Propagate the final status: return to a sourced caller, exit when executed.
 if [ "$_UNTUYAOS3_SOURCED" = 1 ]; then
