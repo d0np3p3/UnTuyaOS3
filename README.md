@@ -57,13 +57,80 @@ ESPHome Kickstart images are included by default, sourced from <https://github.c
 ```text
 ./UnTuyaOS3.sh [options]
 
-  -h, -?, --help     show this help and exit
-  -v, --verbose      enable verbose logging
+  -h, -?, --help             show this help and exit
+  -v, --verbose              enable verbose logging
+  -i, --interface IFACE      Wi-Fi interface to use (default: first found)
+  -p, --platform PLATFORM    T1, BK7231N or RTL8720CF (skips the prompt)
+  -f, --firmware FILE        firmware path, or a file name inside
+                             custom-firmware/<platform>/ (skips the prompt)
 ```
 
 - **`-v` / `--verbose`** — replaces the upload progress bar with the full
   per-frame TX/RX protocol log from `ap-ota.py` (useful for debugging).
 - **`-h` / `-?` / `--help`** — prints usage and exits without doing anything.
+- **`-i` / `--interface`** — the Wi-Fi interface to scan and connect with.
+  Without it, the first interface `iw dev` lists is used, which may be the one
+  your normal network is on.
+- **`-p` / `--platform`**, **`-f` / `--firmware`** — preselect the platform and
+  firmware instead of answering the prompts. The firmware is still checked
+  against the platform's signature bytes.
+
+Setting `UNTUYAOS3_SKIP_INSTALL=1` skips the requirements step, for when the
+dependencies are already installed (the Docker image does this).
+
+## Docker
+
+The Docker image contains everything needed (the compiled Python dependencies,
+`iw`, a DHCP client and the bundled firmware), so nothing is installed on the
+host apart from Docker itself. The host must still be Linux with a Wi-Fi
+adapter. Build it with:
+
+```bash
+docker compose build
+```
+
+A Wi-Fi adapter has no `/dev` node, so it can't be passed in with `--device`.
+There are two ways to give the container one:
+
+### Host networking (simplest)
+
+The container shares the host's network, as when running natively. Only the
+`NET_ADMIN` and `NET_RAW` capabilities are needed, not `--privileged`:
+
+```bash
+docker compose run --rm untuyaos3 -i wlan1
+# or, without compose:
+docker run --rm -it --network host --cap-add NET_ADMIN --cap-add NET_RAW \
+    --device /dev/rfkill untuyaos3 -i wlan1
+```
+
+The host's network manager still manages the adapter, the same as when running
+natively. The device's bogus DNS server can't reach the host, because the
+container has its own `/etc/resolv.conf`.
+
+### Isolated (dedicated adapter)
+
+`docker/run-isolated.sh` moves the adapter into the container, so the host
+can't use or interfere with it until the container exits. The kernel then
+returns it to the host automatically. Run it as root on the Docker host:
+
+```bash
+sudo docker/run-isolated.sh wlan1
+sudo docker/run-isolated.sh wlan1 -p BK7231N -f OpenBK7231N_UG_1.18.315.bin
+```
+
+The adapter's driver must support this; check that
+`iw phy "$(cat /sys/class/net/wlan1/phy80211/name)" info` lists
+`set_wiphy_netns`. Most USB and PCIe adapters do. If yours doesn't, use host
+networking.
+
+### Your own firmware
+
+The firmware bundled in this repository is built into the image. To use other
+files, mount your own `custom-firmware` folder over it: uncomment `volumes` in
+`compose.yaml`, add `-v "$PWD/custom-firmware:/app/custom-firmware:ro"` to
+`docker run`, or set `UNTUYAOS3_FIRMWARE_DIR=/path/to/custom-firmware` for
+`docker/run-isolated.sh`.
 
 ## Notes & cautions
 

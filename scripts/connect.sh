@@ -76,6 +76,8 @@ __connect_main() {
         iface="$(iw dev | awk '$1=="Interface"{print $2; exit}')"
     fi
     [ -n "$iface" ] || { die "no wireless interface found (try: connect.sh <iface>)"; return 1; }
+    # A mistyped interface would otherwise make the scan loop below retry forever.
+    iw dev "$iface" info >/dev/null 2>&1 || { die "'$iface' is not a wireless interface"; return 1; }
 
     # Unblock the radio (rfkill soft-block) and bring the interface up. Both an
     # rfkill block and a DOWN link make scans fail with "Network is down (-100)".

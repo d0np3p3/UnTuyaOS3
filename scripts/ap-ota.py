@@ -16,7 +16,6 @@ import sslpsk3
 from Crypto.Cipher import AES
 from datastruct import DataStruct, datastruct
 from datastruct.fields import built, const, field, padding
-from ltchiptool.util.intbin import letoint
 
 VICTIM_IP = "192.168.176.1"
 SOCKET_TIMEOUT = 15.0
@@ -82,7 +81,7 @@ class Lpv35Frame(DataStruct):
         aes = AES.new(key=key, mode=AES.MODE_GCM, nonce=frame.nonce)
         aes.update(data[4 : 4 + 14])
         frame.data = aes.decrypt_and_verify(frame.data, frame.tag)
-        result = letoint(frame.data[0:4])
+        result = int.from_bytes(frame.data[0:4], "little")
         frame.data = frame.data[4:]
         if VERBOSE:
             print(f"-> RX: 0x{frame.type:02X}/{result}")
