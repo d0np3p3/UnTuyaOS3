@@ -132,6 +132,20 @@ files, mount your own `custom-firmware` folder over it: uncomment `volumes` in
 `docker run`, or set `UNTUYAOS3_FIRMWARE_DIR=/path/to/custom-firmware` for
 `docker/run-isolated.sh`.
 
+### Publishing images (maintainers)
+
+`.github/workflows/docker-image.yml` builds images for `linux/amd64` and
+`linux/arm64` and publishes them to `ghcr.io/<owner>/untuyaos3`. It is off by
+default. To turn it on, set the repository variable `GHCR_PUBLISH_ENABLED` to
+`true` (Settings → Secrets and variables → Actions → Variables). Once enabled:
+
+- pull requests build and smoke-test the image without publishing;
+- pushes to `main` publish `:edge`;
+- `vX.Y.Z` tags publish `:X.Y.Z`, `:X.Y` and `:latest`.
+
+After the first publish, make the package public in its package settings.
+`docker/smoke-test.sh [image]` runs the same checks against a local build.
+
 ## Notes & cautions
 
 - **Flashing custom firmware is at your own risk** and may brick the device or

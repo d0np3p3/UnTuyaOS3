@@ -7,3 +7,5 @@ docker/run-isolated.sh
 venv-UnTuyaOS3/
 **/__pycache__/
 *.md
+.github/
+docker/smoke-test.sh
