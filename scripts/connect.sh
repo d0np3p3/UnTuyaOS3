@@ -76,6 +76,8 @@ __connect_main() {
         iface="$(iw dev | awk '$1=="Interface"{print $2; exit}')"
     fi
     [ -n "$iface" ] || { die "no wireless interface found (try: connect.sh <iface>)"; return 1; }
+    # A mistyped interface would otherwise make the scan loop below retry forever.
+    iw dev "$iface" info >/dev/null 2>&1 || { die "'$iface' is not a wireless interface"; return 1; }
 
     # Unblock the radio (rfkill soft-block) and bring the interface up. Both an
     # rfkill block and a DOWN link make scans fail with "Network is down (-100)".
@@ -174,7 +176,13 @@ __connect_main() {
     # Clear this interface's DNS so the bogus server isn't used system-wide.
     clear_link_dns "$iface"
 
-    printf 'Connected to %s\n' "$match"
+    # Without an address the OTA upload can't reach the device, so fail here
+    # with a clear message instead of a socket timeout later.
+    local addr
+    addr="$(ip -4 -o addr show dev "$iface" | awk '{print $4; exit}')"
+    [ -n "$addr" ] || { die "DHCP did not assign an address on '$iface'"; return 1; }
+
+    printf 'Connected to %s (address %s)\n' "$match" "$addr"
 }
 
 __connect_main

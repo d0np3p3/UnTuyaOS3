@@ -12,6 +12,13 @@
 # Running it normally (./select-platform.sh) sets the variables only inside the
 # script's own process, so they won't survive after the script exits.
 #
+# Optional arguments skip the matching prompt (the firmware is still validated):
+#
+#     source ./select-platform.sh [platform] [firmware]
+#
+#   platform  T1, BK7231N or RTL8720CF (case-insensitive), or 1-3
+#   firmware  a path to a file, or a file name inside custom-firmware/<platform>/
+#
 # Sourcing-safe: restores shell options on the way out and never exits your
 # shell (handles end-of-input instead of looping forever).
 
@@ -23,13 +30,31 @@ set -u
 # custom-firmware/ is found from any cwd.
 __UNT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
-# --- Choose the platform -----------------------------------------------------
-echo "Select target platform:"
-echo "  [1] T1"
-echo "  [2] BK7231N"
-echo "  [3] RTL8720CF"
+__UNT_PLATFORM_ARG="${1:-}"
+__UNT_FIRMWARE_ARG="${2:-}"
 
+# --- Choose the platform -----------------------------------------------------
 __UNT_PLATFORM=""
+if [ -n "$__UNT_PLATFORM_ARG" ]; then
+    case "$(printf '%s' "$__UNT_PLATFORM_ARG" | tr '[:lower:]' '[:upper:]')" in
+        1|T1)        __UNT_PLATFORM="T1" ;;
+        2|BK7231N)   __UNT_PLATFORM="BK7231N" ;;
+        3|RTL8720CF) __UNT_PLATFORM="RTL8720CF" ;;
+        *)
+            # An unknown platform is fatal, like missing or invalid firmware.
+            printf 'Unknown platform: %s (expected T1, BK7231N or RTL8720CF)\n' \
+                "$__UNT_PLATFORM_ARG" >&2
+            exit 1
+            ;;
+    esac
+    echo "Target platform: ${__UNT_PLATFORM}"
+else
+    echo "Select target platform:"
+    echo "  [1] T1"
+    echo "  [2] BK7231N"
+    echo "  [3] RTL8720CF"
+fi
+
 while [ -z "$__UNT_PLATFORM" ]; do
     printf 'Enter choice [1-3]: '
     if ! read -r __UNT_CHOICE; then
@@ -49,21 +74,37 @@ if [ -n "$__UNT_PLATFORM" ]; then
 
     # --- Choose a firmware file for the selected platform --------------------
     __UNT_FW_DIR="${__UNT_DIR}/custom-firmware/${__UNT_PLATFORM}"
+    __UNT_FW=""
 
-    # Collect regular files in the platform's firmware directory. Without a
-    # match the glob stays literal, so the -f test filters it out (array empty).
-    __UNT_FW_FILES=()
-    for __UNT_F in "${__UNT_FW_DIR}"/*; do
-        [ -f "$__UNT_F" ] && __UNT_FW_FILES+=("$__UNT_F")
-    done
-
-    if [ "${#__UNT_FW_FILES[@]}" -eq 0 ]; then
-        # No firmware available is fatal: print the message and tear down the
-        # whole process chain (closes the wrapper and the caller's shell too).
-        printf 'No custom firmware could be found for %s.  Please add a valid `UG` file and try again.\n' \
-            "$UNTUYAOS3_PLATFORM" >&2
-        exit 1
+    if [ -n "$__UNT_FIRMWARE_ARG" ]; then
+        # Preselected firmware: an existing path wins, otherwise look the name
+        # up in the platform's firmware directory. Not found is fatal.
+        if [ -f "$__UNT_FIRMWARE_ARG" ]; then
+            __UNT_FW="$__UNT_FIRMWARE_ARG"
+        elif [ -f "${__UNT_FW_DIR}/${__UNT_FIRMWARE_ARG}" ]; then
+            __UNT_FW="${__UNT_FW_DIR}/${__UNT_FIRMWARE_ARG}"
+        else
+            printf 'Firmware not found: %s (not a file, and not in %s)\n' \
+                "$__UNT_FIRMWARE_ARG" "$__UNT_FW_DIR" >&2
+            exit 1
+        fi
+        echo "Firmware: ${__UNT_FW}"
     else
+        # Collect regular files in the platform's firmware directory. Without a
+        # match the glob stays literal, so the -f test filters it out (array empty).
+        __UNT_FW_FILES=()
+        for __UNT_F in "${__UNT_FW_DIR}"/*; do
+            [ -f "$__UNT_F" ] && __UNT_FW_FILES+=("$__UNT_F")
+        done
+
+        if [ "${#__UNT_FW_FILES[@]}" -eq 0 ]; then
+            # No firmware available is fatal: print the message and tear down the
+            # whole process chain (closes the wrapper and the caller's shell too).
+            printf 'No custom firmware could be found for %s.  Please add a valid `UG` file and try again.\n' \
+                "$UNTUYAOS3_PLATFORM" >&2
+            exit 1
+        fi
+
         echo
         echo "Select firmware for ${__UNT_PLATFORM}:"
         __UNT_I=1
@@ -72,7 +113,6 @@ if [ -n "$__UNT_PLATFORM" ]; then
             __UNT_I=$((__UNT_I + 1))
         done
 
-        __UNT_FW=""
         __UNT_MAX=${#__UNT_FW_FILES[@]}
         while [ -z "$__UNT_FW" ]; do
             printf 'Enter choice [1-%d]: ' "$__UNT_MAX"
@@ -87,27 +127,27 @@ if [ -n "$__UNT_PLATFORM" ]; then
                 echo "Invalid choice: '$__UNT_CHOICE'. Please enter 1-${__UNT_MAX}."
             fi
         done
+    fi
 
-        if [ -n "$__UNT_FW" ]; then
-            export UNTUYAOS3_FIRMWARE="$__UNT_FW"
+    if [ -n "$__UNT_FW" ]; then
+        export UNTUYAOS3_FIRMWARE="$__UNT_FW"
 
-            # --- Validate the firmware's magic bytes per platform ------------
-            # Each platform checks LEN bytes starting at byte offset OFF against
-            # an expected lowercase-hex signature.
-            case "$UNTUYAOS3_PLATFORM" in
-                T1)        __UNT_OFF=0;  __UNT_LEN=4;  __UNT_MAGIC="4d4d4d00" ;;   # bytes 0-4
-                BK7231N)   __UNT_OFF=0;  __UNT_LEN=4;  __UNT_MAGIC="55aa55aa" ;;   # bytes 0-4
-                RTL8720CF) __UNT_OFF=32; __UNT_LEN=16; __UNT_MAGIC="68513ef83e396b12ba059a900f36b6d3" ;;  # bytes 32-48
-                *)         __UNT_OFF=0;  __UNT_LEN=0;  __UNT_MAGIC="" ;;
-            esac
+        # --- Validate the firmware's magic bytes per platform ----------------
+        # Each platform checks LEN bytes starting at byte offset OFF against
+        # an expected lowercase-hex signature.
+        case "$UNTUYAOS3_PLATFORM" in
+            T1)        __UNT_OFF=0;  __UNT_LEN=4;  __UNT_MAGIC="4d4d4d00" ;;   # bytes 0-4
+            BK7231N)   __UNT_OFF=0;  __UNT_LEN=4;  __UNT_MAGIC="55aa55aa" ;;   # bytes 0-4
+            RTL8720CF) __UNT_OFF=32; __UNT_LEN=16; __UNT_MAGIC="68513ef83e396b12ba059a900f36b6d3" ;;  # bytes 32-48
+            *)         __UNT_OFF=0;  __UNT_LEN=0;  __UNT_MAGIC="" ;;
+        esac
 
-            if [ -n "$__UNT_MAGIC" ]; then
-                # Read LEN bytes at offset OFF as lowercase hex (empty if short).
-                __UNT_HEAD="$(od -An -v -tx1 -j "$__UNT_OFF" -N "$__UNT_LEN" \
-                              "$UNTUYAOS3_FIRMWARE" 2>/dev/null | tr -d ' \n')"
-                if [ "$__UNT_HEAD" != "$__UNT_MAGIC" ]; then
-                    __UNT_INVALID=1
-                fi
+        if [ -n "$__UNT_MAGIC" ]; then
+            # Read LEN bytes at offset OFF as lowercase hex (empty if short).
+            __UNT_HEAD="$(od -An -v -tx1 -j "$__UNT_OFF" -N "$__UNT_LEN" \
+                          "$UNTUYAOS3_FIRMWARE" 2>/dev/null | tr -d ' \n')"
+            if [ "$__UNT_HEAD" != "$__UNT_MAGIC" ]; then
+                __UNT_INVALID=1
             fi
         fi
     fi
@@ -116,6 +156,7 @@ fi
 # Restore caller's shell options and clean up (sourcing-safe).
 eval "$__UNT_OPTS"
 unset __UNT_OPTS __UNT_DIR __UNT_PLATFORM __UNT_CHOICE \
+      __UNT_PLATFORM_ARG __UNT_FIRMWARE_ARG \
       __UNT_FW_DIR __UNT_FW_FILES __UNT_F __UNT_I __UNT_FW __UNT_MAX \
       __UNT_OFF __UNT_LEN __UNT_MAGIC __UNT_HEAD 2>/dev/null
 

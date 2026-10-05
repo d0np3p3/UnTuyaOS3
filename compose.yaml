@@ -1,0 +1,22 @@
+# Runs UnTuyaOS3 with host networking ("host" mode), so the container uses the
+# host's Wi-Fi adapter directly. Pick the adapter with -i, e.g.:
+#
+#     docker compose run --rm untuyaos3 -i wlan1
+#
+# For a dedicated adapter moved exclusively into the container, use
+# docker/run-isolated.sh instead (see README.md).
+services:
+  untuyaos3:
+    build: .
+    image: untuyaos3
+    network_mode: host
+    cap_add:
+      - NET_ADMIN   # iw scan/connect, ip link/addr
+      - NET_RAW     # DHCP client raw socket
+    devices:
+      - /dev/rfkill # unblock a soft-blocked radio
+    stdin_open: true
+    tty: true
+    # Uncomment to use your own firmware instead of the bundled images:
+    # volumes:
+    #   - ./custom-firmware:/app/custom-firmware:ro

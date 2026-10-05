@@ -2,8 +2,9 @@
 #
 # install-requirements.sh - Install python3 and pip via the system package
 #                            manager, then create a Python environment named
-#                            "venv-UnTuyaOS3" and install the required packages
-#                            into it with pip, and finally activate it.
+#                            "venv-UnTuyaOS3" and install the Python packages
+#                            listed in requirements.txt into it with pip, and
+#                            finally activate it.
 #
 # Sourcing-safe: when sourced it returns instead of exiting (so it never closes
 # your shell) and restores shell options / helper functions on the way out.
@@ -25,7 +26,7 @@ __UNT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 ENV_NAME="venv-UnTuyaOS3"
 ENV_PATH="${__UNT_ROOT}/${ENV_NAME}"
-PACKAGES="pyopenssl pycryptodome py-datastruct ltchiptool sslpsk3"
+REQUIREMENTS="${__UNT_ROOT}/requirements.txt"
 
 die() { printf 'error: %s\n' "$*" >&2; }
 
@@ -92,6 +93,15 @@ __install_requirements_main() {
         return 1
     fi
 
+    # connect.sh also needs `ip`. Most systems already have it (from iproute2,
+    # or e.g. busybox), so only add the package when the command is missing.
+    if ! command -v ip >/dev/null 2>&1; then
+        case "$PM" in
+            dnf|yum) SYS_PACKAGES="${SYS_PACKAGES} iproute" ;;
+            *)       SYS_PACKAGES="${SYS_PACKAGES} iproute2" ;;
+        esac
+    fi
+
     local syspkg __UNT_SYS_MISSING=""
     echo "==> Checking system packages (${PM})..."
     for syspkg in $SYS_PACKAGES; do
@@ -144,12 +154,15 @@ __install_requirements_main() {
         [ -x "$ENV_PIP" ] || { die "could not locate pip inside '${ENV_PATH}'"; return 1; }
     fi
 
+    [ -f "$REQUIREMENTS" ] || { die "missing requirements file: ${REQUIREMENTS}"; return 1; }
+
     # Only install packages that aren't already present in the venv. `pip show`
     # exits 0 when a distribution is installed (it normalizes case and the
-    # hyphen/underscore in names like py-datastruct).
+    # hyphen/underscore in names like py-datastruct). Package names are taken
+    # from requirements.txt with comments and version specifiers stripped.
     local pkg __UNT_MISSING=""
     echo "==> Checking installed packages in '${ENV_NAME}'..."
-    for pkg in $PACKAGES; do
+    for pkg in $(sed -e 's/#.*//' -e 's/[[:space:]<>=!~;\[].*//' "$REQUIREMENTS"); do
         if "$ENV_PIP" show "$pkg" >/dev/null 2>&1; then
             echo "    already installed: $pkg"
         else
@@ -163,9 +176,8 @@ __install_requirements_main() {
         echo "==> Upgrading pip in '${ENV_NAME}' before installing packages..."
         "$ENV_PIP" install --upgrade pip || { die "failed to upgrade pip"; return 1; }
 
-        echo "==> Installing packages: ${__UNT_MISSING}"
-        # shellcheck disable=SC2086  # intentional word-splitting of the list
-        "$ENV_PIP" install $__UNT_MISSING || { die "failed to install packages"; return 1; }
+        echo "==> Installing packages from requirements.txt: ${__UNT_MISSING}"
+        "$ENV_PIP" install -r "$REQUIREMENTS" || { die "failed to install packages"; return 1; }
     else
         echo "==> All required packages are already installed."
     fi
@@ -197,7 +209,7 @@ __UNT_RC=$?
 
 # Restore caller's shell options and clean up helpers (sourcing-safe).
 eval "$__UNT_OPTS"
-unset __UNT_OPTS __UNT_ROOT ENV_NAME ENV_PATH PACKAGES
+unset __UNT_OPTS __UNT_ROOT ENV_NAME ENV_PATH REQUIREMENTS
 unset -f die pkg_installed pm_install 2>/dev/null
 if [ "$__UNT_SOURCED" = 1 ]; then
     unset __UNT_SOURCED
